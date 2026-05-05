@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Frustration Meter
 // @namespace    https://github.com/wildrivia/zendesk-frustration-meter
-// @version      0.9.3
+// @version      0.9.4
 // @description  Analyzes customer frustration levels in Zendesk tickets using rule-based scoring. Shows progression timeline, categories, and matched phrases.
 // @author       OJ
 // @match        https://*.zendesk.com/agent/tickets/*
@@ -1197,15 +1197,15 @@
 
       let isCustomer = false;
 
-      if (requesterName && author) {
-        // Name match is the most reliable signal when requester is known.
-        // If name doesn't match the requester, it's an HE/agent message.
-        isCustomer =
-          author.toLowerCase().includes(requesterName.toLowerCase()) ||
-          requesterName.toLowerCase().includes(author.toLowerCase());
-      } else if (hasAgentBadge) {
-        // AgentBadge explicitly marks this as an HE message in chat
+      if (hasAgentBadge) {
+        // Agent badge is the most reliable signal — Zendesk sets it on all HE replies
+        // sent through the web interface. Messages without it are inbound.
         isCustomer = false;
+      } else if (requesterName && author) {
+        // No agent badge — message is inbound (requester or another contact from their org).
+        // HE replies always carry an agent badge; no-badge messages are treated as customer
+        // regardless of whether the author name matches the requester exactly.
+        isCustomer = true;
       } else if (originatedFrom === 'MobileSdkInteraction') {
         // Customer's own mobile/SDK submission — always inbound
         isCustomer = true;
