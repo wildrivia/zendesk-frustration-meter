@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Frustration Meter
 // @namespace    https://github.com/wildrivia/zendesk-frustration-meter
-// @version      0.9
+// @version      0.9.1
 // @description  Analyzes customer frustration levels in Zendesk tickets using rule-based scoring. Shows progression timeline, categories, and matched phrases.
 // @author       OJ
 // @match        https://*.zendesk.com/agent/tickets/*
@@ -856,12 +856,9 @@
 
   function getRequesterName() {
     const selectors = [
-      '[data-test-id="requester-field"] .zd-select__single-value',
-      '[data-test-id="requester-field"] input[type="text"]',
-      '.requester .content',
-      '.requester-name',
-      '[data-fieldname="requester"] .value .content',
-      '[data-fieldname="requester"] .value',
+      '[data-test-id="ticket-system-field-requester-select"]',
+      '[data-test-id="tooltip-requester-name"]',
+      '[data-test-id="tabs-nav-item-users"]',
     ];
     for (const sel of selectors) {
       const el = document.querySelector(sel);
