@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Frustration Meter
 // @namespace    https://github.com/wildrivia/zendesk-frustration-meter
-// @version      0.9.1
+// @version      0.9.2
 // @description  Analyzes customer frustration levels in Zendesk tickets using rule-based scoring. Shows progression timeline, categories, and matched phrases.
 // @author       OJ
 // @match        https://*.zendesk.com/agent/tickets/*
@@ -1198,10 +1198,17 @@
       let isCustomer = false;
 
       if (requesterName && author) {
-        // Best case: requester name known — match by author
-        isCustomer =
+        const nameMatch =
           author.toLowerCase().includes(requesterName.toLowerCase()) ||
           requesterName.toLowerCase().includes(author.toLowerCase());
+        if (nameMatch) {
+          // Name confirms this is the customer — no need for phrase detection
+          isCustomer = true;
+        } else {
+          // Name doesn't match requester — fall back to phrase detection rather
+          // than assuming agent, since the author display can vary between messages.
+          isCustomer = !isDefinitelyAgentReply(text);
+        }
       } else if (hasAgentBadge) {
         // AgentBadge explicitly marks this as an HE message in chat
         isCustomer = false;
