@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Frustration Meter
 // @namespace    https://github.com/wildrivia/zendesk-frustration-meter
-// @version      0.10.3
+// @version      0.10.4
 // @description  Analyzes customer frustration levels in Zendesk tickets using rule-based scoring. Shows progression timeline, categories, and matched phrases.
 // @author       OJ
 // @match        https://*.zendesk.com/agent/tickets/*
@@ -41,6 +41,15 @@
     'cl_churn_risk':                    { label: 'churn risk',       value: 2 },
     'cl_negative_sentiment':            { label: 'negative sentiment', value: 1 },
   };
+
+  // Known Zendesk automation authors. Messages with these author names are skipped from
+  // both customer message extraction AND the agent timeline — they're not real HE replies.
+  const BOT_AUTHOR_NAMES = new Set(['happy bot', 'happybot', 'odie']);
+
+  function isBotAuthor(name) {
+    if (!name) return false;
+    return BOT_AUTHOR_NAMES.has(name.toLowerCase().trim());
+  }
 
   const BYPASS_REQUESTER_DOMAINS = ['stripe.com'];
   // Tag-based bypass — tickets with any of these tags are Stripe bridge tickets, scored N/A.
@@ -1269,8 +1278,23 @@
         continue;
       }
 
-      // Skip system/bot/automation non-internal interactions entirely
-      if (originatedFrom === 'ApiInteraction' || originatedFrom === 'Trigger') continue;
+      // Author name (extracted early so it can drive bot/origin skip decisions below)
+      const earlyAuthor = getAuthorFromEl(article, [
+        '[data-test-id="omni-log-item-sender"]',
+        '[data-test-id*="author"]',
+        '[data-test-id*="actor"]',
+      ]);
+
+      // Skip known automation/bot authors regardless of origin. Happy Bot and Odie
+      // post via ApiInteraction or Trigger; customer support-form submissions also
+      // arrive as ApiInteraction, so we can't rely on origin alone.
+      if (isBotAuthor(earlyAuthor)) continue;
+
+      // Skip pure Trigger-origin messages (rule-based automations without a bot author).
+      // ApiInteraction is intentionally NOT skipped here — the support form on
+      // woocommerce.com creates the first ticket comment as ApiInteraction, and dropping
+      // it loses the requester's original message.
+      if (originatedFrom === 'Trigger') continue;
 
       // Get the comment body.
       // Email/web messages use .zd-comment; chat messages use omni-log-message-content.
@@ -1296,12 +1320,8 @@
       // This is more reliable than phrase matching for chat.
       const hasAgentBadge = !!article.querySelector('[data-test-id="omni-log-avatar-badge-AgentBadge"]');
 
-      // Author name (used when requester name is known)
-      const author = getAuthorFromEl(article, [
-        '[data-test-id="omni-log-item-sender"]',
-        '[data-test-id*="author"]',
-        '[data-test-id*="actor"]',
-      ]);
+      // Author name was already extracted early (drives bot/origin skip decisions)
+      const author = earlyAuthor;
 
       let isCustomer = false;
 
