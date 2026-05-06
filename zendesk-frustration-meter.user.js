@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Frustration Meter
 // @namespace    https://github.com/wildrivia/zendesk-frustration-meter
-// @version      0.9.5
+// @version      0.10.0
 // @description  Analyzes customer frustration levels in Zendesk tickets using rule-based scoring. Shows progression timeline, categories, and matched phrases.
 // @author       OJ
 // @match        https://*.zendesk.com/agent/tickets/*
@@ -33,6 +33,15 @@
   ];
 
   // Tickets from these requester email domains are Stripe/partner bridge tickets — scored N/A.
+  // Zendesk AI Classifier tags — signal frustration/churn risk independent of phrase matching.
+  // These are applied by Zendesk's classifier and surfaced in the ticket's tag list.
+  // Boost values are conservative so the rule-based system remains the primary signal.
+  const CLASSIFIER_TAGS = {
+    'cl_customer_has_high_frustration': { label: 'high frustration', value: 2 },
+    'cl_churn_risk':                    { label: 'churn risk',       value: 2 },
+    'cl_negative_sentiment':            { label: 'negative sentiment', value: 1 },
+  };
+
   const BYPASS_REQUESTER_DOMAINS = ['stripe.com'];
   // Tag-based bypass — tickets with any of these tags are Stripe bridge tickets, scored N/A.
   const BYPASS_TAGS = ['stripe_general_inquiry', 'stripe_notifications', 'wcpay_stripe_notifications'];
@@ -82,6 +91,9 @@
         'plugin conflict', 'css conflict', 'jquery conflict', 'javascript conflict',
         'compatibility issue', 'not compatible', 'incompatible',
         'interfering', 'breaking my', 'broke my', 'breaks my', 'messing up', 'messed up',
+        // Product-instability descriptors — distinct from a single failure: they describe
+        // systemic distrust of the product as a whole, often after multiple incidents.
+        'unstable', 'unreliable', 'shaky', 'flaky', 'fragile', 'brittle',
       ],
     },
     support_failure: {
@@ -93,6 +105,10 @@
         'already explained this', 'not addressing my issue', 'asking the same questions',
         'no one has resolved', 'nobody has resolved', 'told the same thing',
         'not helpful', "that didn't work", "doesn't help",
+        // Customer-side confusion — they're not getting clarity, even if support is responsive.
+        "i don't understand", "i still don't understand", "doesn't make sense",
+        'makes no sense', 'not making sense', "i'm confused", 'still confused',
+        'very confusing', "i'm lost", 'not following',
       ],
     },
     emotion: {
@@ -104,6 +120,13 @@
         'ridiculous', 'unacceptable', 'fed up', 'irritated', 'exhausting',
         'tired of this', 'absurd', 'terrible', 'horrible', 'awful',
         'this is a joke', 'pathetic', 'outrageous',
+        'nightmare', 'a disaster', 'devastating', 'stressful',
+        // Risk-exhaustion — accumulated frustration distinct from generic "can't"
+        'cannot take anymore', "can't take anymore", 'cannot take any more',
+        "can't take any more", 'cannot risk', "can't risk", 'cannot afford another',
+        "can't afford another", 'no more risks', 'no more chances',
+        'last straw', 'final straw', 'breaking point', 'had enough',
+        'at my wits end', "at my wit's end",
       ],
     },
     escalation_request: {
@@ -129,6 +152,45 @@
         'cancel my account', 'close my account', 'escalate', 'manager', 'supervisor',
         'complaint', 'report this', 'chargeback', 'switching', 'legal',
         'social media', 'go elsewhere', 'switch provider', 'leaving',
+      ],
+    },
+    churn: {
+      weight: 4,
+      label: 'Churn / Migration',
+      color: '#7c2d12',
+      phrases: [
+        // Active migration verbs — direction matters, hence the prepositions
+        'migrating from', 'migrating away', 'migrate away', 'migrated away',
+        'moving away from', 'move away from', 'moved away from',
+        'moving from woo', 'moving from woocommerce',
+        'leaving woo', 'leaving woocommerce', 'leaving for',
+        'switching from', 'switching off', 'switching away',
+        'going with another', 'going to another',
+        // Reluctant churn — strongest signal: customer wanted to stay but was pushed out
+        "wish i didn't have to leave", "wish i didn't have to move",
+        "wish i didn't have to go", "wish i didn't have to",
+        "didn't want to leave", "didn't want to move",
+        // Forced exit
+        'forced to leave', 'forced to move', 'no choice but to leave',
+        'no choice but to move', 'have to leave', 'have to move',
+        'cannot stay', "can't stay", 'can no longer use', 'no longer feasible',
+      ],
+    },
+    financial_harm: {
+      weight: 4,
+      label: 'Financial Harm',
+      color: '#991b1b',
+      phrases: [
+        // Quantified damage language — strong "you cost me money" signals
+        'in fees', 'in losses', 'in damages',
+        'unintentional charges', 'wrongful charges', 'erroneous charges',
+        'duplicate charges', 'incorrect charges', 'mistaken charges',
+        'overcharged', 'double charged', 'charged twice',
+        'cost me thousands', 'cost us thousands', 'cost me hundreds',
+        'lost money', 'lost revenue', 'lost income', 'lost business',
+        'out of pocket', 'out-of-pocket',
+        'thousand in fees', 'thousands in fees', 'hundreds in fees',
+        'worth of charges', 'worth of unintentional', 'worth of erroneous',
       ],
     },
   };
@@ -519,6 +581,27 @@
     return null;
   }
 
+  // Read AI Classifier tags from the ticket and convert them into score boosts.
+  // Falls back to scanning the full tag-container text in case the selector list is truncated.
+  function getClassifierBoosts() {
+    const tags = new Set();
+    document.querySelectorAll('[data-test-id="ticket-system-field-tags-item-selected"]').forEach(el => {
+      const t = (el.textContent || '').trim().toLowerCase();
+      if (t) tags.add(t);
+    });
+    const fullTagText = (
+      (document.querySelector('[data-test-id="ticket-system-field-tags-multiselect"]') ||
+       document.querySelector('[data-test-id="ticket-fields-tags"]') || {}).textContent || ''
+    ).toLowerCase();
+    const boosts = [];
+    for (const [tag, info] of Object.entries(CLASSIFIER_TAGS)) {
+      if (tags.has(tag) || (fullTagText && fullTagText.indexOf(tag) !== -1)) {
+        boosts.push({ reason: `AI Classifier flagged: ${info.label}`, value: info.value });
+      }
+    }
+    return boosts;
+  }
+
   // Compute wait-time boosts: how long the customer had to wait for an HE to respond.
   // Scored relative to the ticket's SLA tier when a tier tag is found; falls back to
   // absolute thresholds when no tier tag is present.
@@ -847,6 +930,19 @@
     // Cross-cutting: when a refund or cancellation was explicitly requested, always surface a direct action step.
     if (allCategories.escalation_request) {
       steps.add('Address the refund, dispute, or cancellation request directly — confirm what you can do and give a clear timeline.');
+    }
+
+    // Cross-cutting: customer is leaving or migrating away. Don't bury this — it changes the
+    // posture of the reply. Reluctant churn ("wish I didn't have to leave") is a stronger
+    // signal than a threat to leave because the decision is already made.
+    if (allCategories.churn) {
+      steps.add('Customer has signaled they\'re leaving or migrating away. Acknowledge it directly, answer migration questions cleanly, and avoid retention pitches unless the customer opens that door.');
+    }
+
+    // Cross-cutting: customer named concrete financial harm. Acknowledge the dollar impact
+    // explicitly — skipping past it reads as dismissive even when the support reply is technically correct.
+    if (allCategories.financial_harm) {
+      steps.add('Customer has named concrete financial harm. Acknowledge the dollar impact explicitly before moving to next steps — don\'t skip past it.');
     }
 
     return { themes, nextSteps: [...steps] };
@@ -2087,7 +2183,14 @@
         lastAnalysis.score += boost.value;
       }
 
-      if (waitBoosts.length > 0) {
+      // AI Classifier tag boosts — Zendesk's own sentiment/churn signals from the ticket tags.
+      const classifierBoosts = getClassifierBoosts();
+      for (const boost of classifierBoosts) {
+        lastAnalysis.boosts.push(boost);
+        lastAnalysis.score += boost.value;
+      }
+
+      if (waitBoosts.length > 0 || classifierBoosts.length > 0) {
         const updatedLevel = getLevel(lastAnalysis.score);
         lastAnalysis.level = updatedLevel.label;
         lastAnalysis.color = updatedLevel.color;
