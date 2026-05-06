@@ -713,7 +713,7 @@
       recentCategories.delay || trailingUnanswered >= 2;
     const waitBreachWithSignal = hasWaitBreach && (hasLongWait || trailingUnanswered >= 2 || hasEmotionalOrBehavioral);
     if (waitBreachWithSignal || trailingUnanswered >= 2 || recentCategories.delay ||
-        (recentCategories.repetition && msgCount >= 4)) {
+        (recentCategories.repetition && msgCount >= 4 && (trailingUnanswered >= 1 || !hadHEReply))) {
       themes.push({
         id: '03',
         name: 'Perceived Inaction',
