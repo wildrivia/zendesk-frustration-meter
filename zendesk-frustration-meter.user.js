@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Frustration Meter
 // @namespace    https://github.com/wildrivia/zendesk-frustration-meter
-// @version      0.10.2
+// @version      0.10.3
 // @description  Analyzes customer frustration levels in Zendesk tickets using rule-based scoring. Shows progression timeline, categories, and matched phrases.
 // @author       OJ
 // @match        https://*.zendesk.com/agent/tickets/*
@@ -908,7 +908,9 @@
       themes.push({
         id: '06',
         name: 'Product or Engineering Issue',
-        detail: 'Root cause is a known bug, product gap, or third-party dependency — the fix lives with engineering, not support.',
+        detail: linearLinks.length > 0
+          ? 'Root cause is a known bug, product gap, or third-party dependency — a Linear issue is already linked in an internal note. Check it for status before following up.'
+          : 'Root cause is a known bug, product gap, or third-party dependency — the fix lives with engineering, not support.',
       });
       steps.add("Be transparent about what's in scope — and offer the clearest available path forward.");
       // Only suggest checking Linear when it looks like an internal WooCommerce/Automattic bug.
@@ -2016,7 +2018,11 @@
           nudges.push('A previous reply may have missed the point — check your response addressed their specific concern directly.');
         }
         if (themeIds.includes('06')) {
-          nudges.push('Root cause is a known bug or engineering issue — follow up when there is a fix or update to share.');
+          if (data.linearLinks && data.linearLinks.length > 0) {
+            nudges.push('A Linear issue is already linked in an internal note — check it for the latest status before following up with the customer.');
+          } else {
+            nudges.push('Root cause is a known bug or engineering issue — follow up when there is a fix or update to share.');
+          }
         }
 
         const overdueClass = isOverdue ? ' fm-followup-overdue' : '';
