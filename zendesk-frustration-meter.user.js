@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Frustration Meter
 // @namespace    https://github.com/wildrivia/zendesk-frustration-meter
-// @version      0.10.1
+// @version      0.10.2
 // @description  Analyzes customer frustration levels in Zendesk tickets using rule-based scoring. Shows progression timeline, categories, and matched phrases.
 // @author       OJ
 // @match        https://*.zendesk.com/agent/tickets/*
@@ -856,7 +856,12 @@
       'dispute', 'disputed', 'disputing', 'payment dispute',
       'verification', 'verify my account', 'verify my identity', 'payout', 'payout delay',
       'payout held', 'stripe verification', 'stripe requirements']);
-    const policyFromHE = heConfirms(['woopayments', 'woo payments', 'account hold', 'funds held',
+    // 'woopayments' / 'woo payments' intentionally NOT in this list — they fire on any
+    // ticket where WooPayments is the payment processor or referenced in passing (e.g.
+    // "WooPayments' payment completion behavior"), which has nothing to do with policy
+    // friction. Trigger 05 needs a specific account/payout/verification context, not just
+    // a product name mention.
+    const policyFromHE = heConfirms(['account hold', 'funds held',
       'account suspended', 'stripe account', 'payment account', 'payout', 'verification required',
       'stripe verification', 'stripe requirements']);
     if (policyFromCustomer || policyFromHE || (recentCategories.escalation && !recentCategories.support_failure)) {
