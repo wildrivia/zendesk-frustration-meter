@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Frustration Meter
 // @namespace    https://github.com/wildrivia/zendesk-frustration-meter
-// @version      0.10.0
+// @version      0.10.1
 // @description  Analyzes customer frustration levels in Zendesk tickets using rule-based scoring. Shows progression timeline, categories, and matched phrases.
 // @author       OJ
 // @match        https://*.zendesk.com/agent/tickets/*
@@ -787,14 +787,19 @@
     }
 
     // 03 · Perceived Inaction
-    // Fires when: SLA was breached AND the customer shows a behavioral/emotional signal
-    // (long multi-day wait, trailing unanswered messages, delay or emotion language),
+    // Fires when: SLA was breached AND the customer shows a current behavioral/emotional signal
+    // (delay/emotion/support_failure phrases, or trailing unanswered messages),
     // OR when trailing unanswered >= 2 / delay / repetition independently.
-    // A single wait breach on a cooperative customer without other signals is not enough —
-    // that avoids false positives on professional customers who don't complain about wait times.
+    // A historical long-wait alone is NOT enough — multi-day gaps in active scheduling threads
+    // (e.g. coordinating a call, async exchange) generate wait boosts even when the conversation
+    // is healthy. Without a current displeasure signal, treating those gaps as "perceived inaction"
+    // is a false positive.
     const hasEmotionalOrBehavioral = recentCategories.emotion || recentCategories.support_failure ||
       recentCategories.delay || trailingUnanswered >= 2;
-    const waitBreachWithSignal = hasWaitBreach && (hasLongWait || trailingUnanswered >= 2 || hasEmotionalOrBehavioral);
+    const waitBreachWithSignal = hasWaitBreach && (
+      hasEmotionalOrBehavioral ||
+      (hasLongWait && trailingUnanswered >= 1)
+    );
     if (waitBreachWithSignal || trailingUnanswered >= 2 || recentCategories.delay ||
         (recentCategories.repetition && msgCount >= 4 && (trailingUnanswered >= 1 || !hadHEReply))) {
       themes.push({
