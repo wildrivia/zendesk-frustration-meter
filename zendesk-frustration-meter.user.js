@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Frustration Meter
 // @namespace    https://github.com/wildrivia/zendesk-frustration-meter
-// @version      0.10.9
+// @version      0.10.10
 // @description  Analyzes customer frustration levels in Zendesk tickets using rule-based scoring. Shows progression timeline, categories, and matched phrases.
 // @author       OJ
 // @match        https://*.zendesk.com/agent/tickets/*
@@ -19,6 +19,7 @@
   const PANEL_ID = 'fm-panel-v05';
   const STYLE_ID = 'fm-styles-v05';
   const POSITION_KEY = 'fm-panel-position-v05';
+  const COLLAPSE_PREF_KEY = 'fm-default-collapsed-v1';
   const INITIAL_DELAY = 1500;
   const NAV_DELAY = 2000;
   const LOAD_DELAY = 2000;
@@ -1784,6 +1785,22 @@
       #${PANEL_ID} .fm-btn:hover {
         background: #f3f4f6;
       }
+      #${PANEL_ID} .fm-pref-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        margin-left: auto;
+        font-size: 10px;
+        color: #6b7280;
+        cursor: pointer;
+        user-select: none;
+      }
+      #${PANEL_ID} .fm-pref-toggle input[type="checkbox"] {
+        width: 11px;
+        height: 11px;
+        margin: 0;
+        cursor: pointer;
+      }
       #${PANEL_ID} .fm-btn-primary {
         background: #2563eb;
         color: #fff;
@@ -1901,11 +1918,31 @@
 
   // ─── Panel ────────────────────────────────────────────────────────────────
 
+  // Preference for whether the panel starts collapsed on each new ticket.
+  // Default is collapsed — pilot testers asked for the panel to stay out of the way
+  // unless they explicitly engage with it. Users who want it always-open can toggle
+  // the "Expand by default" checkbox in the footer.
+  function getDefaultCollapsed() {
+    try {
+      return localStorage.getItem(COLLAPSE_PREF_KEY) !== '0';
+    } catch (e) {
+      return true;
+    }
+  }
+  function setDefaultCollapsed(collapsed) {
+    try {
+      localStorage.setItem(COLLAPSE_PREF_KEY, collapsed ? '1' : '0');
+    } catch (e) {
+      // ignore
+    }
+  }
+
   function getOrCreatePanel() {
     let panel = document.getElementById(PANEL_ID);
     if (!panel) {
       panel = document.createElement('div');
       panel.id = PANEL_ID;
+      if (getDefaultCollapsed()) panel.classList.add('fm-collapsed');
       document.body.appendChild(panel);
       initDrag(panel);
       restorePosition(panel);
@@ -2036,6 +2073,7 @@
           <button class="fm-btn fm-btn-primary fm-rescan-btn">Rescan</button>
           <button class="fm-btn fm-debug-btn">Debug DOM</button>
           <button class="fm-btn fm-reset-btn">Reset Panel</button>
+          <label class="fm-pref-toggle" title="When checked, the panel opens expanded on every new ticket."><input type="checkbox" class="fm-default-expanded-cb"> Expand by default</label>
         </div>
       `;
     } else {
@@ -2202,6 +2240,7 @@
           <button class="fm-btn fm-copy-btn">Copy Summary</button>
           <button class="fm-btn fm-reset-btn">Reset Panel</button>
           <span class="fm-copy-feedback">Copied!</span>
+          <label class="fm-pref-toggle" title="When checked, the panel opens expanded on every new ticket."><input type="checkbox" class="fm-default-expanded-cb"> Expand by default</label>
         </div>
       `;
     }
@@ -2221,6 +2260,7 @@
         <div class="fm-footer">
           <button class="fm-btn fm-btn-primary fm-rescan-btn">Rescan</button>
           <button class="fm-btn fm-reset-btn">Reset Panel</button>
+          <label class="fm-pref-toggle" title="When checked, the panel opens expanded on every new ticket."><input type="checkbox" class="fm-default-expanded-cb"> Expand by default</label>
         </div>
       `;
     }
@@ -2236,6 +2276,14 @@
       panel.classList.toggle('fm-collapsed');
       collapseBtn.textContent = panel.classList.contains('fm-collapsed') ? '+' : '–';
     });
+
+    const defaultExpandedCb = panel.querySelector('.fm-default-expanded-cb');
+    if (defaultExpandedCb) {
+      defaultExpandedCb.checked = !getDefaultCollapsed();
+      defaultExpandedCb.addEventListener('change', (e) => {
+        setDefaultCollapsed(!e.target.checked);
+      });
+    }
 
     panel.querySelector('.fm-rescan-btn')?.addEventListener('click', () => {
       runAnalysis();
