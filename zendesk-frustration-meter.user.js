@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Frustration Meter
 // @namespace    https://github.com/wildrivia/zendesk-frustration-meter
-// @version      0.10.4
+// @version      0.10.5
 // @description  Analyzes customer frustration levels in Zendesk tickets using rule-based scoring. Shows progression timeline, categories, and matched phrases.
 // @author       OJ
 // @match        https://*.zendesk.com/agent/tickets/*
@@ -54,6 +54,30 @@
   const BYPASS_REQUESTER_DOMAINS = ['stripe.com'];
   // Tag-based bypass — tickets with any of these tags are Stripe bridge tickets, scored N/A.
   const BYPASS_TAGS = ['stripe_general_inquiry', 'stripe_notifications', 'wcpay_stripe_notifications'];
+
+  // Matches WordPress.org plugin review URLs in either raw form
+  // (https://wordpress.org/support/plugin/<slug>/reviews/...) or the login-redirect
+  // encoded form (https://login.wordpress.org/?redirect_to=...wordpress.org%2Fsupport%2Fplugin%2F<slug>%2Freviews...).
+  // Capture group 1 is the plugin slug.
+  const REVIEW_LINK_PATTERN = /wordpress\.org(?:%2F|\/)support(?:%2F|\/)plugin(?:%2F|\/)([^/%\s"'<>]+)(?:%2F|\/)reviews/i;
+  const PLUGIN_FRIENDLY_NAMES = {
+    'woocommerce-payments': 'WooPayments',
+    'woocommerce': 'WooCommerce',
+  };
+  function pluginFriendlyName(slug) {
+    return PLUGIN_FRIENDLY_NAMES[slug] || slug;
+  }
+  function detectReviewRequest(article) {
+    const hrefs = article.querySelectorAll('a[href]');
+    for (const a of hrefs) {
+      const m = a.href.match(REVIEW_LINK_PATTERN);
+      if (m) return { plugin: decodeURIComponent(m[1]).toLowerCase() };
+    }
+    const html = article.innerHTML || '';
+    const m = html.match(REVIEW_LINK_PATTERN);
+    if (m) return { plugin: decodeURIComponent(m[1]).toLowerCase() };
+    return null;
+  }
 
   // ─── Frustration Model ────────────────────────────────────────────────────
 
@@ -1355,7 +1379,10 @@
         thread.push({ type: 'customer', timestamp });
       } else {
         // HE/agent message — don't analyze text, but record in timeline for wait-time calc
-        thread.push({ type: 'agent', timestamp, text });
+        const agentEvent = { type: 'agent', timestamp, text };
+        const reviewRequest = detectReviewRequest(article);
+        if (reviewRequest) agentEvent.reviewRequest = reviewRequest;
+        thread.push(agentEvent);
       }
     }
 
@@ -2013,40 +2040,53 @@
         const sla = getTicketSla();
         let isOverdue = false;
         let statusText = 'You replied last — awaiting customer response.';
-
-        if (timeSinceReplyHrs !== null) {
-          const timeLabel = formatWaitDuration(timeSinceReplyHrs);
-          const overdueThreshold = sla ? sla.hours : 24;
-          if (timeSinceReplyHrs > overdueThreshold) {
-            isOverdue = true;
-            const ctx = sla ? ` (${sla.label} SLA: ${sla.hours}h)` : '';
-            statusText = `No customer response in ${timeLabel}${ctx} — consider a follow-up if the ticket is still open.`;
-          } else {
-            statusText = `You replied last — awaiting customer response (${timeLabel} ago).`;
-          }
-        }
-
+        let titleText = 'Awaiting customer response';
         const nudges = [];
-        const themeIds = themes.map(t => t.id);
-        if (levelInfo && (levelInfo.label === 'High' || levelInfo.label === 'Severe')) {
-          nudges.push('High-frustration ticket — when the customer replies, confirm all concerns are resolved before closing.');
-        }
-        if (themeIds.includes('01')) {
-          nudges.push('Customer had no prior human contact — verify your reply acknowledged you are a real person taking ownership.');
-        }
-        if (themeIds.includes('02')) {
-          nudges.push('A previous reply may have missed the point — check your response addressed their specific concern directly.');
-        }
-        if (themeIds.includes('06')) {
-          if (data.linearLinks && data.linearLinks.length > 0) {
-            nudges.push('A Linear issue is already linked in an internal note — check it for the latest status before following up with the customer.');
-          } else {
-            nudges.push('Root cause is a known bug or engineering issue — follow up when there is a fix or update to share.');
+
+        // Review request: customers rarely reply to these, so we skip the overdue
+        // logic and the theme-based nudges — the conversation is effectively closed.
+        const reviewRequest = lastThreadEvent.reviewRequest;
+        if (reviewRequest) {
+          const pluginLabel = pluginFriendlyName(reviewRequest.plugin);
+          const timeAgo = timeSinceReplyHrs !== null
+            ? `${formatWaitDuration(timeSinceReplyHrs)} ago`
+            : 'just now';
+          titleText = 'Review request sent';
+          statusText = `${pluginLabel} review request sent (${timeAgo}) — typically no further action needed unless the customer replies.`;
+        } else {
+          if (timeSinceReplyHrs !== null) {
+            const timeLabel = formatWaitDuration(timeSinceReplyHrs);
+            const overdueThreshold = sla ? sla.hours : 24;
+            if (timeSinceReplyHrs > overdueThreshold) {
+              isOverdue = true;
+              const ctx = sla ? ` (${sla.label} SLA: ${sla.hours}h)` : '';
+              statusText = `No customer response in ${timeLabel}${ctx} — consider a follow-up if the ticket is still open.`;
+              titleText = 'Follow-up may be needed';
+            } else {
+              statusText = `You replied last — awaiting customer response (${timeLabel} ago).`;
+            }
+          }
+
+          const themeIds = themes.map(t => t.id);
+          if (levelInfo && (levelInfo.label === 'High' || levelInfo.label === 'Severe')) {
+            nudges.push('High-frustration ticket — when the customer replies, confirm all concerns are resolved before closing.');
+          }
+          if (themeIds.includes('01')) {
+            nudges.push('Customer had no prior human contact — verify your reply acknowledged you are a real person taking ownership.');
+          }
+          if (themeIds.includes('02')) {
+            nudges.push('A previous reply may have missed the point — check your response addressed their specific concern directly.');
+          }
+          if (themeIds.includes('06')) {
+            if (data.linearLinks && data.linearLinks.length > 0) {
+              nudges.push('A Linear issue is already linked in an internal note — check it for the latest status before following up with the customer.');
+            } else {
+              nudges.push('Root cause is a known bug or engineering issue — follow up when there is a fix or update to share.');
+            }
           }
         }
 
         const overdueClass = isOverdue ? ' fm-followup-overdue' : '';
-        const titleText = isOverdue ? 'Follow-up may be needed' : 'Awaiting customer response';
         contextHtml += `
           <div class="fm-section-label">Follow-up Check</div>
           <div class="fm-followup${overdueClass}">
