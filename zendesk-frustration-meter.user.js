@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Frustration Meter
 // @namespace    https://github.com/wildrivia/zendesk-frustration-meter
-// @version      0.10.7
+// @version      0.10.8
 // @description  Analyzes customer frustration levels in Zendesk tickets using rule-based scoring. Shows progression timeline, categories, and matched phrases.
 // @author       OJ
 // @match        https://*.zendesk.com/agent/tickets/*
@@ -87,7 +87,7 @@
       label: 'Repeated Effort',
       color: '#8b5cf6',
       phrases: [
-        'still not working', 'already tried', 'again', 'as i said',
+        'still not working', 'already tried', 'as i said',
         'for the second time', 'for the third time', 'multiple times',
         'once again', 'i already explained', 'i already sent',
         'tried that already', 'still having the same issue', 'keep having',
