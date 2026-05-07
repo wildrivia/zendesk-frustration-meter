@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Frustration Meter
 // @namespace    https://github.com/wildrivia/zendesk-frustration-meter
-// @version      0.10.10
+// @version      0.10.11
 // @description  Analyzes customer frustration levels in Zendesk tickets using rule-based scoring. Shows progression timeline, categories, and matched phrases.
 // @author       OJ
 // @match        https://*.zendesk.com/agent/tickets/*
@@ -2419,6 +2419,17 @@
       retryCount = 0;
       if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
       if (navTimer) clearTimeout(navTimer);
+
+      // The panel persists across SPA navigations. Re-apply the default-collapsed
+      // preference here so a user who flipped the checkbox on the previous ticket
+      // sees the change take effect on the next one. Without this, the renderer
+      // would inherit the prior ticket's class state.
+      const panel = document.getElementById(PANEL_ID);
+      if (panel) {
+        if (getDefaultCollapsed()) panel.classList.add('fm-collapsed');
+        else panel.classList.remove('fm-collapsed');
+      }
+
       navTimer = setTimeout(() => {
         runAnalysis();
       }, NAV_DELAY);
