@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Frustration Meter
 // @namespace    https://github.com/wildrivia/zendesk-frustration-meter
-// @version      0.10.6
+// @version      0.10.7
 // @description  Analyzes customer frustration levels in Zendesk tickets using rule-based scoring. Shows progression timeline, categories, and matched phrases.
 // @author       OJ
 // @match        https://*.zendesk.com/agent/tickets/*
@@ -2288,12 +2288,16 @@
     const { messages: rawMessages, strategy, requesterName, thread, linearLinks } = extractMessages();
 
     // If nothing found, the conversation may still be rendering — retry automatically.
-    // Stop retrying once messages are found or after 4 attempts (~10s total).
-    if (rawMessages.length === 0 && retryCount < 4) {
+    // Also retry when tags haven't appeared yet: messages can render before the right-hand
+    // sidebar finishes loading, and product/SLA/classifier detection all read from tags.
+    // Stop retrying once both are present or after 4 attempts (~10s total).
+    const tagsLoaded = readTicketTags().size > 0;
+    const notReady = rawMessages.length === 0 || !tagsLoaded;
+    if (notReady && retryCount < 4) {
       retryCount++;
       if (retryTimer) clearTimeout(retryTimer);
       retryTimer = setTimeout(runAnalysis, 2500);
-    } else if (rawMessages.length > 0) {
+    } else if (!notReady) {
       retryCount = 0;
       if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
     }
