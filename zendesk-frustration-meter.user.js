@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Frustration Meter
 // @namespace    https://github.com/wildrivia/zendesk-frustration-meter
-// @version      0.10.11
+// @version      0.10.12
 // @description  Analyzes customer frustration levels in Zendesk tickets using rule-based scoring. Shows progression timeline, categories, and matched phrases.
 // @author       OJ
 // @match        https://*.zendesk.com/agent/tickets/*
@@ -997,7 +997,14 @@
     // 06 · Outside Support's Control
     // Fires when: a bug, third-party product, or out-of-scope issue is the root cause.
     // Also checks HE reply text — bug confirmations come from the agent side, not the customer.
-    if (hasAny(['known bug', 'known issue', 'feature request', 'third party', 'third-party',
+    // 'third-party'/'third party' are deliberately compound-only — bare forms false-fire
+    // on best-practice mentions like "third-party forms" or "disabled third-party plugins
+    // to debug" which are not root-cause attributions.
+    if (hasAny(['known bug', 'known issue', 'feature request',
+                 'third-party plugin', 'third party plugin',
+                 'third-party theme',  'third party theme',
+                 'third-party tool',   'third party tool',
+                 'third-party app',    'third party app',
                  'not supported', 'your plugin', 'your theme', 'hosting issue', 'server issue',
                  'misrouted', 'out of scope',
                  'plugin conflict', 'conflict with', 'conflicting with', 'compatibility issue',
@@ -1005,7 +1012,14 @@
         heConfirms(['known issue', 'known bug', 'development team', 'our engineers',
                     'working on a fix', 'working toward a fix', 'working to fix',
                     'planned fix', 'release', 'workaround',
-                    'third-party', 'third party', 'outside our control', 'not in scope',
+                    'third-party plugin', 'third party plugin',
+                    'third-party theme',  'third party theme',
+                    'third-party developer', 'third party developer',
+                    'third-party tool',   'third party tool',
+                    'third-party service','third party service',
+                    'third-party issue',  'third party issue',
+                    'third-party bug',    'third party bug',
+                    'outside our control', 'not in scope',
                     'conflict', 'conflicting', 'plugin conflict', 'css conflict',
                     'jquery conflict', 'compatibility issue', 'not compatible',
                     'incompatible', 'interfering with', 'i tested', 'after testing',
@@ -1021,11 +1035,20 @@
       steps.add("Be transparent about what's in scope — and offer the clearest available path forward.");
       // Only suggest checking Linear when it looks like an internal WooCommerce/Automattic bug.
       // For third-party plugin conflicts, the fix lives with the plugin developer, not engineering.
-      const isThirdParty = heConfirms(['third-party', 'third party', 'outside our control',
+      const isThirdParty = heConfirms([
+        'third-party plugin', 'third party plugin',
+        'third-party theme',  'third party theme',
+        'third-party developer', 'third party developer',
+        'third-party tool',   'third party tool',
+        'third-party service','third party service',
+        'outside our control',
         'plugin developer', 'theme developer', 'hosting provider', 'aspiring',
         'another plugin', 'another developer', 'conflict between', 'conflict with the',
         'forward to', 'forward this to', 'reach out to the']) ||
-        hasAny(['third party', 'third-party', 'your plugin', 'your theme']);
+        hasAny([
+          'third-party plugin', 'third party plugin',
+          'third-party theme',  'third party theme',
+          'your plugin', 'your theme']);
       if (linearLinks.length > 0) {
         steps.add('A Linear issue is already linked in an internal note — check it for the latest status and share any update or timeline with the customer.');
       } else if (!isThirdParty) {
