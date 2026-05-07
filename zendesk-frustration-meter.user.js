@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Frustration Meter
 // @namespace    https://github.com/wildrivia/zendesk-frustration-meter
-// @version      0.10.5
+// @version      0.10.6
 // @description  Analyzes customer frustration levels in Zendesk tickets using rule-based scoring. Shows progression timeline, categories, and matched phrases.
 // @author       OJ
 // @match        https://*.zendesk.com/agent/tickets/*
@@ -601,16 +601,45 @@
     return null;
   }
 
-  // Read the ticket's support tier from its tags and return the matching SLA entry.
-  function getTicketSla() {
+  // Collect all selected tags on the current ticket as a lowercased Set.
+  function readTicketTags() {
     const tags = new Set();
     document.querySelectorAll('[data-test-id="ticket-system-field-tags-item-selected"]').forEach(el => {
       const t = (el.textContent || '').trim().toLowerCase();
       if (t) tags.add(t);
     });
+    return tags;
+  }
+
+  // Read the ticket's support tier from its tags and return the matching SLA entry.
+  function getTicketSla() {
+    const tags = readTicketTags();
     for (const tier of SLA_TIERS) {
       if (tier.tags.some(tag => tags.has(tag))) return tier;
     }
+    return null;
+  }
+
+  // Identify which product this ticket is about. MailPoet detection is tag-based —
+  // any `mailpoet*` or `cl_mailpoet_*` tag flips it. Default is woopayments since
+  // the script's framing was originally tuned for that team.
+  function getTicketProduct() {
+    const tags = readTicketTags();
+    for (const t of tags) {
+      if (t === 'mailpoet' || t.indexOf('mailpoet_') === 0 || t.indexOf('cl_mailpoet_') === 0 || t === 'autotriage_mailpoet') {
+        return 'mailpoet';
+      }
+    }
+    return 'woopayments';
+  }
+
+  // For MailPoet tickets, identify the issue type from tags so the framing copy can
+  // speak directly to the situation. Returns null when no specific tag is found —
+  // the trigger then falls back to a generic MailPoet account/plan framing.
+  function getMailPoetIssueType() {
+    const tags = readTicketTags();
+    if (tags.has('mailpoet_ban_review') || tags.has('mailpoet_ban_via_email')) return 'suspension';
+    if (tags.has('cl_mailpoet_billing')) return 'billing';
     return null;
   }
 
@@ -898,27 +927,54 @@
       'account suspended', 'stripe account', 'payment account', 'payout', 'verification required',
       'stripe verification', 'stripe requirements']);
     if (policyFromCustomer || policyFromHE || (recentCategories.escalation && !recentCategories.support_failure)) {
-      const hasVerification = hasAny(['verification', 'verify my account', 'verify my identity',
-        'stripe verification', 'stripe requirements', 'identity check']);
-      const hasPayoutIssue  = hasAny(['payout', 'payout delay', 'payout held', 'funds held']);
-      const detail = hasDispute
-        ? 'Customer has raised a payment dispute — a formal process involving their bank or payment provider that WooPayments cannot fully control.'
-        : hasVerification
-          ? 'Customer is frustrated with account verification or Stripe identity requirements — a process outside their control and often lacking clear timelines.'
-          : hasPayoutIssue
-            ? 'Customer is experiencing a payout delay or hold — funds feel inaccessible for reasons they cannot see or control.'
-            : (policyFromHE && !policyFromCustomer)
-              ? 'This is a WooPayments or payment account issue — a process the customer cannot see into. Opacity drives frustration even when support is responsive.'
-              : 'Customer frustration is directed at a payment or account process they cannot control — this may relate to verification, payout timelines, dispute handling, or account policies.';
-      themes.push({ id: '05', name: 'Payment / Policy Friction', detail });
-      if (hasDispute) {
-        steps.add('Acknowledge the dispute directly — name it, don\'t avoid it. The customer needs to know you understand the severity.');
-        steps.add('Explain the dispute process clearly: what happens next, what evidence or action is needed, and a realistic timeline.');
-        steps.add('Be honest about what WooPayments can and cannot influence — the final outcome may rest with the customer\'s bank.');
+      const product = getTicketProduct();
+      let themeName = 'Payment / Policy Friction';
+      let detail;
+      const themeSteps = [];
+
+      if (product === 'mailpoet') {
+        const issue = getMailPoetIssueType();
+        themeName = 'MailPoet Account / Policy';
+        if (issue === 'suspension') {
+          detail = 'MailPoet sending has been suspended for this site — typically flagged for high bounces or spam complaints. The customer cannot resume sending until the account is reviewed and cleared.';
+          themeSteps.push('Acknowledge the suspension directly — confirm what was flagged and what review steps come next.');
+          themeSteps.push('Set a clear timeline: how long the review takes and when they should hear back.');
+          themeSteps.push("Be honest about what the customer can do now (list hygiene, removing inactive subscribers) vs what's in our hands.");
+        } else if (issue === 'billing') {
+          detail = 'Customer is dealing with a MailPoet billing or subscription concern — pricing changes, plan limits, or payment problems often feel opaque without a clear breakdown.';
+          themeSteps.push('Walk through the specific charge or plan change in plain language — what they paid for, what changed, and why.');
+          themeSteps.push('Offer a concrete next step (refund, plan switch, billing fix) and a realistic timeline.');
+          themeSteps.push("Don't lean on policy-speak — name what you can do for them directly.");
+        } else {
+          detail = 'Customer is dealing with a MailPoet account or plan process they cannot fully see into — opacity around limits, suspensions, or account state drives frustration even when support is responsive.';
+          themeSteps.push('Lead with empathy first. Offer a concrete next step or a clear timeline for resolution.');
+          themeSteps.push("Don't over-explain the process — focus on what you can do and by when.");
+        }
       } else {
-        steps.add('Lead with empathy first. Offer a concrete next step or a clear timeline for resolution.');
-        steps.add("Don't over-explain the process — focus on what you can do and by when.");
+        const hasVerification = hasAny(['verification', 'verify my account', 'verify my identity',
+          'stripe verification', 'stripe requirements', 'identity check']);
+        const hasPayoutIssue  = hasAny(['payout', 'payout delay', 'payout held', 'funds held']);
+        detail = hasDispute
+          ? 'Customer has raised a payment dispute — a formal process involving their bank or payment provider that WooPayments cannot fully control.'
+          : hasVerification
+            ? 'Customer is frustrated with account verification or Stripe identity requirements — a process outside their control and often lacking clear timelines.'
+            : hasPayoutIssue
+              ? 'Customer is experiencing a payout delay or hold — funds feel inaccessible for reasons they cannot see or control.'
+              : (policyFromHE && !policyFromCustomer)
+                ? 'This is a WooPayments or payment account issue — a process the customer cannot see into. Opacity drives frustration even when support is responsive.'
+                : 'Customer frustration is directed at a payment or account process they cannot control — this may relate to verification, payout timelines, dispute handling, or account policies.';
+        if (hasDispute) {
+          themeSteps.push('Acknowledge the dispute directly — name it, don\'t avoid it. The customer needs to know you understand the severity.');
+          themeSteps.push('Explain the dispute process clearly: what happens next, what evidence or action is needed, and a realistic timeline.');
+          themeSteps.push('Be honest about what WooPayments can and cannot influence — the final outcome may rest with the customer\'s bank.');
+        } else {
+          themeSteps.push('Lead with empathy first. Offer a concrete next step or a clear timeline for resolution.');
+          themeSteps.push("Don't over-explain the process — focus on what you can do and by when.");
+        }
       }
+
+      themes.push({ id: '05', name: themeName, detail });
+      for (const s of themeSteps) steps.add(s);
     }
 
     // 06 · Outside Support's Control
