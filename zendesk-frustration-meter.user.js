@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Frustration Meter
 // @namespace    https://github.com/wildrivia/zendesk-frustration-meter
-// @version      0.10.8
+// @version      0.10.9
 // @description  Analyzes customer frustration levels in Zendesk tickets using rule-based scoring. Shows progression timeline, categories, and matched phrases.
 // @author       OJ
 // @match        https://*.zendesk.com/agent/tickets/*
@@ -95,6 +95,22 @@
         'still the same', 'still happening', 'still broken', 'still getting',
         'same issue', 'same error', 'back again', 'happened again',
         'issue persists', 'problem persists', 'continues to',
+        // 'again' compound phrases — kept narrow to avoid false-firing on
+        // innocuous "running again" / "working again" state descriptions.
+        // Recurring-issue patterns:
+        'happening again', 'broke again', 'broken again', 'occurred again',
+        'started again', 'showing up again', 'popping up again', 'is back again',
+        // Frustrated follow-up patterns (customer having to retry contact):
+        'reaching out again', 'asking again', 'contacting you again',
+        'writing again', 'writing in again', 'emailing again', 'messaging again',
+        'following up again', 'checking in again',
+        // Re-explaining (customer repeating themselves):
+        'explain again', 'explaining again', 'tell you again', 'telling you again',
+        'saying again',
+        // Re-doing work:
+        'doing this again', 'starting over again', 'start over again',
+        // Strong frustration marker:
+        'yet again',
       ],
     },
     delay: {
