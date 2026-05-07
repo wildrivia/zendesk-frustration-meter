@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Frustration Meter
 // @namespace    https://github.com/wildrivia/zendesk-frustration-meter
-// @version      0.10.12
+// @version      0.11.0
 // @description  Analyzes customer frustration levels in Zendesk tickets using rule-based scoring. Shows progression timeline, categories, and matched phrases.
 // @author       OJ
 // @match        https://*.zendesk.com/agent/tickets/*
@@ -739,6 +739,52 @@
     return boosts;
   }
 
+  // For the "Why this trigger?" expansion: find which phrases from a list actually
+  // appear in any of the supplied messages, and return a short surrounding snippet.
+  // Mirrors the substring semantics of hasAny / heConfirms (case-insensitive includes).
+  // Returns at most one entry per phrase (first matching message wins).
+  function findMatchesInMsgs(phraseList, msgs, side) {
+    const out = [];
+    for (const phrase of phraseList) {
+      const lowerPhrase = phrase.toLowerCase();
+      for (const msg of msgs) {
+        const text = msg.text || '';
+        const lower = text.toLowerCase();
+        const idx = lower.indexOf(lowerPhrase);
+        if (idx === -1) continue;
+        const start = Math.max(0, idx - 30);
+        const end = Math.min(text.length, idx + lowerPhrase.length + 30);
+        const snippet = (start > 0 ? '…' : '') + text.slice(start, end) + (end < text.length ? '…' : '');
+        out.push({ phrase, snippet, side });
+        break;
+      }
+    }
+    return out;
+  }
+
+  // For category-driven trigger conditions (recentCategories.X), surface the actual
+  // phrases that fired the category in each message's analysis.
+  function findCategoryMatchesInMsgs(catKey, msgs, side) {
+    const out = [];
+    const seen = new Set();
+    for (const msg of msgs) {
+      const phrases = (msg.analysis && msg.analysis.categories && msg.analysis.categories[catKey]) || [];
+      for (const phrase of phrases) {
+        if (seen.has(phrase)) continue;
+        const text = msg.text || '';
+        const lower = text.toLowerCase();
+        const idx = lower.indexOf(phrase.toLowerCase());
+        if (idx === -1) continue;
+        const start = Math.max(0, idx - 30);
+        const end = Math.min(text.length, idx + phrase.length + 30);
+        const snippet = (start > 0 ? '…' : '') + text.slice(start, end) + (end < text.length ? '…' : '');
+        out.push({ phrase, snippet, side, category: catKey });
+        seen.add(phrase);
+      }
+    }
+    return out;
+  }
+
   // Identify likely frustration themes across the full conversation.
   // Based on OJ's P2 research: "Mapping Frustration Triggers in Negative CSATs".
   // Identifies which of the 7 frustration triggers from the Team Libra learnup apply.
@@ -780,6 +826,16 @@
       if (event.type === 'agent' && event.text) heText += ' ' + event.text.toLowerCase();
     }
     const heConfirms = words => words.some(w => heText.includes(w));
+
+    // Evidence-collection shorthands. These return matched phrases + snippets so that
+    // the "Why this trigger?" UI can show the customer/HE text that fired each trigger.
+    // They mirror the boolean checks above but never short-circuit — they collect every match.
+    const heMessages = thread.filter(t => t.type === 'agent' && t.text);
+    const findInCustomer = (phrases) => findMatchesInMsgs(phrases, messages, 'customer');
+    const findInRecent   = (phrases) => findMatchesInMsgs(phrases, recentMsgs, 'customer');
+    const findInHE       = (phrases) => findMatchesInMsgs(phrases, heMessages, 'agent');
+    const findCatInRecent = (catKey) => findCategoryMatchesInMsgs(catKey, recentMsgs, 'customer');
+    const findCatInAll    = (catKey) => findCategoryMatchesInMsgs(catKey, messages, 'customer');
 
     // Wait-time signals derived from score boosts
     const hasOpenWait   = allBoosts.some(b => b.reason && b.reason.startsWith('No HE reply'));
@@ -830,16 +886,23 @@
     // mentionsAI uses hasAnyRecent (last 3 messages only) to avoid false positives from
     // early automated queue/bot messages ("A real person will be with you shortly") that
     // appear before the HE connects and are sometimes included in the thread.
-    const mentionsAI = hasAnyRecent(['bot', 'odie', 'automated reply', 'automated response', 'robot',
+    const aiPhrases = ['bot', 'odie', 'automated reply', 'automated response', 'robot',
       'real person', 'real human', 'speak to someone', 'talk to someone', 'actual person',
-      'human support', 'human agent', 'not a human', 'chatbot', 'ai response']);
+      'human support', 'human agent', 'not a human', 'chatbot', 'ai response'];
+    const mentionsAI = hasAnyRecent(aiPhrases);
     if ((hasOpenWait && !hadHEReply) || mentionsAI) {
+      const evidence = [];
+      if (hasOpenWait && !hadHEReply) {
+        evidence.push({ side: 'timing', label: 'No HE reply yet', snippet: 'Customer is in an open wait with no human response in the conversation.' });
+      }
+      if (mentionsAI) evidence.push(...findInRecent(aiPhrases));
       themes.push({
         id: '01',
         name: 'AI-driven Frustration',
         detail: mentionsAI
           ? 'Customer signalled frustration with automated responses or difficulty reaching a human.'
           : 'No human has responded yet — this ticket needs immediate attention.',
+        evidence,
       });
       if (mentionsAI) {
         steps.add('Acknowledge this is now a human response and take clear ownership of the issue.');
@@ -850,16 +913,20 @@
 
     // 02 · Misunderstood Issue or Intent
     // Fires when: a recent reply appeared to miss the point or felt generic.
-    const missedPoint = recentCategories.support_failure ||
-      hasAnyRecent(['not understanding', 'not addressing', "didn't help", "that didn't help",
-               'wrong problem', 'not what i asked', 'not what i meant', 'misunderstood',
-               'different issue', 'same answer', 'generic response', 'copy paste',
-               'copy-paste', 'canned response', 'template response']);
+    const t02Phrases = ['not understanding', 'not addressing', "didn't help", "that didn't help",
+      'wrong problem', 'not what i asked', 'not what i meant', 'misunderstood',
+      'different issue', 'same answer', 'generic response', 'copy paste',
+      'copy-paste', 'canned response', 'template response'];
+    const missedPoint = recentCategories.support_failure || hasAnyRecent(t02Phrases);
     if (missedPoint) {
+      const evidence = [];
+      if (recentCategories.support_failure) evidence.push(...findCatInRecent('support_failure'));
+      evidence.push(...findInRecent(t02Phrases));
       themes.push({
         id: '02',
         name: 'Misunderstood Issue or Intent',
         detail: 'A previous reply may have addressed the wrong problem, felt generic, or missed the customer\'s specific context.',
+        evidence,
       });
       steps.add("Mirror the customer's specific concern back before offering a solution.");
       steps.add('Reference specifics: product name, URL, order number, or the exact error described.');
@@ -881,12 +948,31 @@
     );
     if (waitBreachWithSignal || trailingUnanswered >= 2 || recentCategories.delay ||
         (recentCategories.repetition && msgCount >= 4 && (trailingUnanswered >= 1 || !hadHEReply))) {
+      const evidence = [];
+      if (recentCategories.delay) evidence.push(...findCatInRecent('delay'));
+      if (recentCategories.emotion) evidence.push(...findCatInRecent('emotion'));
+      if (recentCategories.support_failure) evidence.push(...findCatInRecent('support_failure'));
+      if (recentCategories.repetition && msgCount >= 4 && (trailingUnanswered >= 1 || !hadHEReply)) {
+        evidence.push(...findCatInRecent('repetition'));
+      }
+      if (trailingUnanswered >= 2) {
+        evidence.push({ side: 'timing', label: 'Trailing unanswered', snippet: `${trailingUnanswered} consecutive customer messages without an HE response.` });
+      }
+      const waitBreachBoosts = allBoosts.filter(b => b.value >= 2 && (b.reason.startsWith('Waited') || b.reason.startsWith('No HE reply')));
+      for (const b of waitBreachBoosts) {
+        evidence.push({ side: 'timing', label: 'Wait breach', snippet: b.reason });
+      }
+      const longWaitBoosts = allBoosts.filter(b => b.reason && /\b[2-9]\d*d\b/.test(b.reason));
+      for (const b of longWaitBoosts) {
+        evidence.push({ side: 'timing', label: 'Long wait', snippet: b.reason });
+      }
       themes.push({
         id: '03',
         name: 'Perceived Inaction',
         detail: trailingUnanswered >= 2
           ? 'Customer has sent multiple follow-ups into silence — no human response received.'
           : 'Slow or absent replies have left this customer feeling ignored or stalled.',
+        evidence,
       });
       if (cooperativeCustomer) {
         steps.add("This customer has completed what was asked of them. Before replying, confirm what you did with what they provided. If you still need more from them, acknowledge their effort first and explain specifically why.");
@@ -903,19 +989,25 @@
     // Fires when: customer was bounced between teams, hit setup friction, or expected a different channel.
     // Also fires when the HE's replies show a pattern of internal escalation — polite/professional
     // customers rarely complain about being bounced, but the HE side reveals it.
-    const processGapFromCustomer = hasAnyRecent(['transferred', 'bounced between', 'different team',
+    const t04CustPhrases = ['transferred', 'bounced between', 'different team',
       'another team', 'wrong team', 'wrong department', 'live chat', 'phone support', 'phone call',
-      'i expected', 'expected to', 'misrouted', 'redirected to']);
-    const processGapFromHE = heConfirms(['reach out to our', 'reached out to our', 'working with our',
+      'i expected', 'expected to', 'misrouted', 'redirected to'];
+    const t04HePhrases = ['reach out to our', 'reached out to our', 'working with our',
       'in touch with our', 'internal team', 'escalated internally', 'passed this on', 'passed this along',
-      'marketplace team', 'partner team', 'vendor team', 'extensions team', 'our other team']);
+      'marketplace team', 'partner team', 'vendor team', 'extensions team', 'our other team'];
+    const processGapFromCustomer = hasAnyRecent(t04CustPhrases);
+    const processGapFromHE = heConfirms(t04HePhrases);
     if (processGapFromCustomer || processGapFromHE) {
+      const evidence = [];
+      if (processGapFromCustomer) evidence.push(...findInRecent(t04CustPhrases));
+      if (processGapFromHE) evidence.push(...findInHE(t04HePhrases));
       themes.push({
         id: '04',
         name: 'Process Gaps',
         detail: processGapFromHE && !processGapFromCustomer
           ? 'This issue involves another internal team — the customer is waiting on a handoff they cannot see or control.'
           : 'Customer may have been bounced between teams, hit unexpected setup friction, or experienced a support channel mismatch.',
+        evidence,
       });
       steps.add(processGapFromHE && !processGapFromCustomer
         ? 'Get a concrete answer from the other team before replying — another "I\'ve escalated internally" without an outcome will land badly.'
@@ -929,21 +1021,27 @@
     // 'woopayments'/'woo payments' intentionally excluded from policyFromCustomer — customers name
     // the product in technical contexts constantly, which causes false positives. Those terms are
     // kept in policyFromHE where the HE's own reply provides meaningful context.
-    const policyFromCustomer = hasAnyRecent(['policy', 'unfair', 'without notice', 'without warning',
+    const t05CustPhrases = ['policy', 'unfair', 'without notice', 'without warning',
       'no reason explained', 'not explained', 'account hold', 'funds held', 'suspended',
       'chargeback', 'refund denied', 'no refund', 'licensing', 'subscription terms',
       'dispute', 'disputed', 'disputing', 'payment dispute',
       'verification', 'verify my account', 'verify my identity', 'payout', 'payout delay',
-      'payout held', 'stripe verification', 'stripe requirements']);
+      'payout held', 'stripe verification', 'stripe requirements'];
+    const policyFromCustomer = hasAnyRecent(t05CustPhrases);
     // 'woopayments' / 'woo payments' intentionally NOT in this list — they fire on any
     // ticket where WooPayments is the payment processor or referenced in passing (e.g.
     // "WooPayments' payment completion behavior"), which has nothing to do with policy
     // friction. Trigger 05 needs a specific account/payout/verification context, not just
     // a product name mention.
-    const policyFromHE = heConfirms(['account hold', 'funds held',
+    const t05HePhrases = ['account hold', 'funds held',
       'account suspended', 'stripe account', 'payment account', 'payout', 'verification required',
-      'stripe verification', 'stripe requirements']);
+      'stripe verification', 'stripe requirements'];
+    const policyFromHE = heConfirms(t05HePhrases);
     if (policyFromCustomer || policyFromHE || (recentCategories.escalation && !recentCategories.support_failure)) {
+      const evidence = [];
+      if (policyFromCustomer) evidence.push(...findInRecent(t05CustPhrases));
+      if (policyFromHE) evidence.push(...findInHE(t05HePhrases));
+      if (recentCategories.escalation && !recentCategories.support_failure) evidence.push(...findCatInRecent('escalation'));
       const product = getTicketProduct();
       let themeName = 'Payment / Policy Friction';
       let detail;
@@ -990,7 +1088,7 @@
         }
       }
 
-      themes.push({ id: '05', name: themeName, detail });
+      themes.push({ id: '05', name: themeName, detail, evidence });
       for (const s of themeSteps) steps.add(s);
     }
 
@@ -1000,37 +1098,47 @@
     // 'third-party'/'third party' are deliberately compound-only — bare forms false-fire
     // on best-practice mentions like "third-party forms" or "disabled third-party plugins
     // to debug" which are not root-cause attributions.
-    if (hasAny(['known bug', 'known issue', 'feature request',
-                 'third-party plugin', 'third party plugin',
-                 'third-party theme',  'third party theme',
-                 'third-party tool',   'third party tool',
-                 'third-party app',    'third party app',
-                 'not supported', 'your plugin', 'your theme', 'hosting issue', 'server issue',
-                 'misrouted', 'out of scope',
-                 'plugin conflict', 'conflict with', 'conflicting with', 'compatibility issue',
-                 'not compatible', 'incompatible']) ||
-        heConfirms(['known issue', 'known bug', 'development team', 'our engineers',
-                    'working on a fix', 'working toward a fix', 'working to fix',
-                    'planned fix', 'release', 'workaround',
-                    'third-party plugin', 'third party plugin',
-                    'third-party theme',  'third party theme',
-                    'third-party developer', 'third party developer',
-                    'third-party tool',   'third party tool',
-                    'third-party service','third party service',
-                    'third-party issue',  'third party issue',
-                    'third-party bug',    'third party bug',
-                    'outside our control', 'not in scope',
-                    'conflict', 'conflicting', 'plugin conflict', 'css conflict',
-                    'jquery conflict', 'compatibility issue', 'not compatible',
-                    'incompatible', 'interfering with', 'i tested', 'after testing',
-                    'after further testing', 'i found that', 'i was able to reproduce',
-                    'i can reproduce', 'confirmed the issue'])) {
+    const t06CustPhrases = ['known bug', 'known issue', 'feature request',
+      'third-party plugin', 'third party plugin',
+      'third-party theme',  'third party theme',
+      'third-party tool',   'third party tool',
+      'third-party app',    'third party app',
+      'not supported', 'your plugin', 'your theme', 'hosting issue', 'server issue',
+      'misrouted', 'out of scope',
+      'plugin conflict', 'conflict with', 'conflicting with', 'compatibility issue',
+      'not compatible', 'incompatible'];
+    const t06HePhrases = ['known issue', 'known bug', 'development team', 'our engineers',
+      'working on a fix', 'working toward a fix', 'working to fix',
+      'planned fix', 'release', 'workaround',
+      'third-party plugin', 'third party plugin',
+      'third-party theme',  'third party theme',
+      'third-party developer', 'third party developer',
+      'third-party tool',   'third party tool',
+      'third-party service','third party service',
+      'third-party issue',  'third party issue',
+      'third-party bug',    'third party bug',
+      'outside our control', 'not in scope',
+      'conflict', 'conflicting', 'plugin conflict', 'css conflict',
+      'jquery conflict', 'compatibility issue', 'not compatible',
+      'incompatible', 'interfering with', 'i tested', 'after testing',
+      'after further testing', 'i found that', 'i was able to reproduce',
+      'i can reproduce', 'confirmed the issue'];
+    const t06CustHit = hasAny(t06CustPhrases);
+    const t06HeHit = heConfirms(t06HePhrases);
+    if (t06CustHit || t06HeHit) {
+      const evidence = [];
+      if (t06CustHit) evidence.push(...findInCustomer(t06CustPhrases));
+      if (t06HeHit) evidence.push(...findInHE(t06HePhrases));
+      if (linearLinks.length > 0) {
+        evidence.push({ side: 'context', label: 'Linear link', snippet: 'A Linear issue is linked in an internal note: ' + linearLinks[0] });
+      }
       themes.push({
         id: '06',
         name: 'Product or Engineering Issue',
         detail: linearLinks.length > 0
           ? 'Root cause is a known bug, product gap, or third-party dependency — a Linear issue is already linked in an internal note. Check it for status before following up.'
           : 'Root cause is a known bug, product gap, or third-party dependency — the fix lives with engineering, not support.',
+        evidence,
       });
       steps.add("Be transparent about what's in scope — and offer the clearest available path forward.");
       // Only suggest checking Linear when it looks like an internal WooCommerce/Automattic bug.
@@ -1060,10 +1168,14 @@
 
     // 07 · Unresolved Feeling (outcome only — fallback when no clearer trigger applies)
     if (themes.length === 0 && msgCount >= 3 && (recentCategories.emotion || recentCategories.support_failure)) {
+      const evidence = [];
+      if (recentCategories.emotion) evidence.push(...findCatInRecent('emotion'));
+      if (recentCategories.support_failure) evidence.push(...findCatInRecent('support_failure'));
       themes.push({
         id: '07',
         name: 'Unresolved Feeling',
         detail: 'Issue may not be fully resolved — or the customer never received clear confirmation that it was.',
+        evidence,
       });
       steps.add('Explicitly confirm what was resolved and state the next step or outcome clearly.');
     }
@@ -1864,6 +1976,84 @@
         color: #4c1d95;
         line-height: 1.4;
       }
+      #${PANEL_ID} .fm-context-theme[data-has-evidence="1"] .fm-context-theme-name {
+        cursor: pointer;
+        user-select: none;
+      }
+      #${PANEL_ID} .fm-context-chevron {
+        font-size: 9px;
+        color: #7c3aed;
+        margin-left: 4px;
+        display: inline-block;
+        transition: transform 0.15s;
+      }
+      #${PANEL_ID} .fm-context-theme.fm-expanded .fm-context-chevron {
+        transform: rotate(90deg);
+      }
+      #${PANEL_ID} .fm-context-evidence {
+        display: none;
+        margin-top: 6px;
+        padding-left: 8px;
+        border-left: 2px solid #c4b5fd;
+      }
+      #${PANEL_ID} .fm-context-theme.fm-expanded .fm-context-evidence {
+        display: block;
+      }
+      #${PANEL_ID} .fm-evidence-item {
+        font-size: 10.5px;
+        line-height: 1.45;
+        margin-bottom: 5px;
+        color: #4c1d95;
+      }
+      #${PANEL_ID} .fm-evidence-item:last-child {
+        margin-bottom: 0;
+      }
+      #${PANEL_ID} .fm-evidence-meta {
+        display: block;
+        margin-bottom: 1px;
+      }
+      #${PANEL_ID} .fm-evidence-side {
+        display: inline-block;
+        font-size: 9px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+        padding: 1px 5px;
+        border-radius: 3px;
+        margin-right: 5px;
+        background: #ede9fe;
+        color: #6d28d9;
+      }
+      #${PANEL_ID} .fm-evidence-side[data-side="agent"] {
+        background: #dcfce7;
+        color: #166534;
+      }
+      #${PANEL_ID} .fm-evidence-side[data-side="timing"] {
+        background: #fef3c7;
+        color: #92400e;
+      }
+      #${PANEL_ID} .fm-evidence-side[data-side="context"] {
+        background: #e0e7ff;
+        color: #3730a3;
+      }
+      #${PANEL_ID} .fm-evidence-phrase {
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+        font-size: 10.5px;
+        color: #1f2937;
+        background: #fff;
+        border: 1px solid #ddd6fe;
+        border-radius: 3px;
+        padding: 0 4px;
+      }
+      #${PANEL_ID} .fm-evidence-snippet {
+        display: block;
+        margin-top: 2px;
+        margin-left: 2px;
+        font-style: italic;
+        color: #6b7280;
+        font-size: 10.5px;
+        line-height: 1.4;
+      }
       #${PANEL_ID} .fm-next-steps {
         list-style: none;
         padding: 0;
@@ -2160,9 +2350,31 @@
         contextHtml += `<div class="fm-section-label">Frustration Trigger Context</div>`;
         contextHtml += `<div class="fm-context">`;
         for (const t of themes) {
-          contextHtml += `<div class="fm-context-theme">
-            <span class="fm-context-theme-name">${t.id ? escapeHtml(t.id + ' · ' + t.name) : escapeHtml(t.name)}</span>
+          const evidence = Array.isArray(t.evidence) ? t.evidence : [];
+          const hasEv = evidence.length > 0;
+          const titleHtml = (t.id ? escapeHtml(t.id + ' · ' + t.name) : escapeHtml(t.name)) +
+            (hasEv ? `<span class="fm-context-chevron" aria-hidden="true">▸</span>` : '');
+          let evidenceHtml = '';
+          if (hasEv) {
+            evidenceHtml = `<div class="fm-context-evidence">`;
+            for (const ev of evidence) {
+              const sideRaw = (ev.side || 'customer').toLowerCase();
+              const sideLabel = ev.label
+                ? ev.label
+                : (sideRaw === 'agent' ? 'HE reply' : sideRaw === 'timing' ? 'Timing' : sideRaw === 'context' ? 'Context' : 'Customer');
+              const phrase = ev.phrase || '';
+              const snippet = ev.snippet || '';
+              evidenceHtml += `<div class="fm-evidence-item">
+                <span class="fm-evidence-meta"><span class="fm-evidence-side" data-side="${escapeHtml(sideRaw)}">${escapeHtml(sideLabel)}</span>${phrase ? `<span class="fm-evidence-phrase">"${escapeHtml(phrase)}"</span>` : ''}</span>
+                ${snippet ? `<span class="fm-evidence-snippet">${escapeHtml(snippet)}</span>` : ''}
+              </div>`;
+            }
+            evidenceHtml += `</div>`;
+          }
+          contextHtml += `<div class="fm-context-theme" data-theme-id="${escapeHtml(t.id || '')}" data-has-evidence="${hasEv ? '1' : '0'}">
+            <span class="fm-context-theme-name">${titleHtml}</span>
             <span class="fm-context-theme-detail">${escapeHtml(t.detail)}</span>
+            ${evidenceHtml}
           </div>`;
         }
         contextHtml += `</div>`;
@@ -2307,6 +2519,15 @@
         setDefaultCollapsed(!e.target.checked);
       });
     }
+
+    // Click trigger name → toggle evidence expansion (only when there's evidence to show).
+    panel.querySelectorAll('.fm-context-theme[data-has-evidence="1"] .fm-context-theme-name').forEach(name => {
+      name.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const theme = name.closest('.fm-context-theme');
+        if (theme) theme.classList.toggle('fm-expanded');
+      });
+    });
 
     panel.querySelector('.fm-rescan-btn')?.addEventListener('click', () => {
       runAnalysis();
