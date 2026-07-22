@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Zendesk Frustration Meter
 // @namespace    https://github.com/wildrivia/zendesk-frustration-meter
-// @version      0.11.0
+// @version      0.11.2
 // @description  Analyzes customer frustration levels in Zendesk tickets using rule-based scoring. Shows progression timeline, categories, and matched phrases.
 // @author       OJ
 // @match        https://*.zendesk.com/agent/tickets/*
@@ -39,8 +39,10 @@
   // Boost values are conservative so the rule-based system remains the primary signal.
   const CLASSIFIER_TAGS = {
     'cl_customer_has_high_frustration': { label: 'high frustration', value: 2 },
+    'cl_high_frustration':              { label: 'high frustration', value: 2 }, // Dotcom variant of the Woo tag above
     'cl_churn_risk':                    { label: 'churn risk',       value: 2 },
     'cl_negative_sentiment':            { label: 'negative sentiment', value: 1 },
+    'cl_dotcom_initial_sentiment_negative': { label: 'negative sentiment', value: 1 }, // Dotcom sentiment tag (Woo uses cl_negative_sentiment)
   };
 
   // Known Zendesk automation authors. Messages with these author names are skipped from
@@ -224,6 +226,10 @@
         'forced to leave', 'forced to move', 'no choice but to leave',
         'no choice but to move', 'have to leave', 'have to move',
         'cannot stay', "can't stay", 'can no longer use', 'no longer feasible',
+        // App/service abandonment beyond Woo migration — named competitors keep precision high
+        'stop using this app', 'stop using the app', 'stop using your', 'have to stop using',
+        'moving to shopify', 'move to shopify', 'switching to shopify',
+        'moving to squarespace', 'moving to wix', 'moving to bigcommerce',
       ],
     },
     financial_harm: {
@@ -241,6 +247,29 @@
         'out of pocket', 'out-of-pocket',
         'thousand in fees', 'thousands in fees', 'hundreds in fees',
         'worth of charges', 'worth of unintentional', 'worth of erroneous',
+      ],
+    },
+    persistence: {
+      weight: 2,
+      label: 'Prolonged Issue',
+      color: '#78350f',
+      phrases: [
+        // Customer states the PROBLEM ITSELF (not the reply-wait) has dragged on and is still
+        // unresolved. Deliberately language-based — this does NOT touch the SLA wait-time logic,
+        // which is intentionally guarded against firing on healthy multi-day threads. Catches the
+        // quiet, low-emotion "it's been broken for a month" tickets the phrase engine used to shrug at.
+        'for a month', 'for over a month', 'for more than a month', 'for the past month',
+        'for the last month', 'for months', 'for weeks', 'for several weeks',
+        'for the past few weeks', 'for the last few weeks', 'for days now', 'for weeks now',
+        'still not working', 'still not fixed', 'still not resolved',
+        "still isn't working", "still isn't fixed", "still doesn't work",
+        'still broken', 'still happening', 'keeps happening', 'keeps failing',
+        // perfect-tense "broke and stayed broke" phrasing — catches "has not been working ... for ~a month"
+        // without matching future-deadline text like "event is in 2 months"
+        'not been working', 'has not been working', "hasn't been working",
+        'has been broken', 'been broken for', 'has not worked', "hasn't worked",
+        'keep happening', 'continues to happen', 'been going on for', 'has been going on',
+        'going on for weeks', 'ongoing for', 'every day since', 'day after day',
       ],
     },
   };
@@ -888,7 +917,10 @@
     // appear before the HE connects and are sometimes included in the thread.
     const aiPhrases = ['bot', 'odie', 'automated reply', 'automated response', 'robot',
       'real person', 'real human', 'speak to someone', 'talk to someone', 'actual person',
-      'human support', 'human agent', 'not a human', 'chatbot', 'ai response'];
+      'human support', 'human agent', 'not a human', 'chatbot', 'ai response',
+      // AI-rejection phrasing seen on real tickets ("your auto reply", "assign a human", "one of your humans")
+      'auto reply', 'auto-reply', 'assign a human', 'a human for support', 'need a human',
+      'want a human', 'get a human', 'reach a human', 'one of your humans', 'your humans'];
     const mentionsAI = hasAnyRecent(aiPhrases);
     if ((hasOpenWait && !hadHEReply) || mentionsAI) {
       const evidence = [];
@@ -1196,6 +1228,12 @@
     // explicitly — skipping past it reads as dismissive even when the support reply is technically correct.
     if (allCategories.financial_harm) {
       steps.add('Customer has named concrete financial harm. Acknowledge the dollar impact explicitly before moving to next steps — don\'t skip past it.');
+    }
+
+    // Cross-cutting: the problem itself (not the reply wait) has dragged on unresolved. Even with no
+    // emotional language this is fragile — name the duration and make sure the reply actually lands.
+    if (allCategories.persistence) {
+      steps.add('This problem has persisted unresolved for a while. Acknowledge how long it\'s been going on, and make sure this reply resolves it or clearly moves it forward — another generic step reads as the runaround.');
     }
 
     return { themes, nextSteps: [...steps] };
